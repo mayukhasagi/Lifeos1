@@ -146,7 +146,7 @@ def summary():
              FROM Habit_Logs hl
              JOIN Habits h ON h.habit_id = hl.habit_id
              WHERE h.user_id = u.user_id
-               AND hl.log_date = CURDATE()
+               AND hl.log_date = TRUNC(SYSDATE)
                AND (hl.status = 1 OR hl.completion_count > 0))
                 AS completed_today
         FROM Users u

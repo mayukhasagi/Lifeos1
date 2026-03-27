@@ -72,9 +72,10 @@ def create_habit():
         """
         INSERT INTO Habits (user_id, habit_name, frequency, target_count, habit_type)
         VALUES (%s, %s, %s, %s, %s)
+        RETURNING habit_id INTO %s
         """,
         (request.user_id, name, frequency, target_count, habit_type),
-        commit=True
+        commit=True, out_id_type='NUMBER'
     )
     return jsonify({"habit_id": habit_id, "habit_name": name}), 201
 

@@ -1,185 +1,174 @@
 -- =============================================================================
--- LifeOS: Gamified Habit Tracking System
+-- LifeOS: Gamified Habit Tracking System (Oracle SQL Version)
 -- File: 01_schema.sql  |  Database Schema (3NF Normalized)
 -- =============================================================================
 
-CREATE DATABASE IF NOT EXISTS lifeos
-    CHARACTER SET utf8mb4
-    COLLATE utf8mb4_unicode_ci;
+SET SQLBLANKLINES ON;
 
-USE lifeos;
+-- Clean up existing tables (so it behaves like DROP IF EXISTS)
+BEGIN
+   EXECUTE IMMEDIATE 'DROP TABLE Budget_Alerts CASCADE CONSTRAINTS';
+EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+BEGIN
+   EXECUTE IMMEDIATE 'DROP TABLE Budgets CASCADE CONSTRAINTS';
+EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+BEGIN
+   EXECUTE IMMEDIATE 'DROP TABLE Expenses CASCADE CONSTRAINTS';
+EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+BEGIN
+   EXECUTE IMMEDIATE 'DROP TABLE User_Badges CASCADE CONSTRAINTS';
+EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+BEGIN
+   EXECUTE IMMEDIATE 'DROP TABLE Badges CASCADE CONSTRAINTS';
+EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+BEGIN
+   EXECUTE IMMEDIATE 'DROP TABLE Habit_Logs CASCADE CONSTRAINTS';
+EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+BEGIN
+   EXECUTE IMMEDIATE 'DROP TABLE Habits CASCADE CONSTRAINTS';
+EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+BEGIN
+   EXECUTE IMMEDIATE 'DROP TABLE Users CASCADE CONSTRAINTS';
+EXCEPTION WHEN OTHERS THEN NULL; END;
+/
 
 -- ---------------------------------------------------------------------------
 -- 1. USERS
---    Central entity. All other tables reference user_id.
 -- ---------------------------------------------------------------------------
 CREATE TABLE Users (
-    user_id       INT            UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    name          VARCHAR(100)   NOT NULL,
-    email         VARCHAR(255)   NOT NULL,
-    password_hash VARCHAR(255)   NOT NULL,
-    points        INT            UNSIGNED NOT NULL DEFAULT 0,
-    created_at    DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
+    user_id       NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name          VARCHAR2(100)  NOT NULL,
+    email         VARCHAR2(255)  NOT NULL,
+    password_hash VARCHAR2(255)  NOT NULL,
+    points        NUMBER         DEFAULT 0 NOT NULL,
+    created_at    TIMESTAMP      DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT uq_users_email UNIQUE (email)
 );
 
 -- ---------------------------------------------------------------------------
 -- 2. HABITS
---    habit_type: 'binary'  → log records done/not done (status TINYINT 0/1)
---               'count'   → log records a numeric count
---    frequency:  'daily' | 'weekly'
 -- ---------------------------------------------------------------------------
 CREATE TABLE Habits (
-    habit_id      INT            UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    user_id       INT            UNSIGNED NOT NULL,
-    habit_name    VARCHAR(150)   NOT NULL,
-    frequency     ENUM('daily', 'weekly') NOT NULL DEFAULT 'daily',
-    target_count  TINYINT        UNSIGNED NOT NULL DEFAULT 1
-                                 COMMENT 'Times to complete per period',
-    habit_type    ENUM('binary', 'count') NOT NULL DEFAULT 'binary',
-    current_streak INT           UNSIGNED NOT NULL DEFAULT 0,
-    best_streak   INT            UNSIGNED NOT NULL DEFAULT 0,
-    is_active     TINYINT(1)     NOT NULL DEFAULT 1,
-    created_at    DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT fk_habits_user
-        FOREIGN KEY (user_id) REFERENCES Users(user_id)
-        ON DELETE CASCADE ON UPDATE CASCADE,
-
-    INDEX idx_habits_user (user_id),
-    INDEX idx_habits_active (user_id, is_active)
+    habit_id      NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id       NUMBER         NOT NULL,
+    habit_name    VARCHAR2(150)  NOT NULL,
+    frequency     VARCHAR2(20)   DEFAULT 'daily' NOT NULL,
+    target_count  NUMBER         DEFAULT 1 NOT NULL,
+    habit_type    VARCHAR2(20)   DEFAULT 'binary' NOT NULL,
+    current_streak NUMBER        DEFAULT 0 NOT NULL,
+    best_streak   NUMBER         DEFAULT 0 NOT NULL,
+    is_active     NUMBER(1)      DEFAULT 1 NOT NULL,
+    created_at    TIMESTAMP      DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT fk_habits_user FOREIGN KEY (user_id) REFERENCES Users(user_id) ON DELETE CASCADE,
+    CONSTRAINT chk_habit_freq CHECK (frequency IN ('daily', 'weekly')),
+    CONSTRAINT chk_habit_type CHECK (habit_type IN ('binary', 'count'))
 );
+
+CREATE INDEX idx_habits_user ON Habits(user_id);
+CREATE INDEX idx_habits_active ON Habits(user_id, is_active);
 
 -- ---------------------------------------------------------------------------
 -- 3. HABIT_LOGS
---    One row per (habit, date). status = 1 means completed for binary habits.
---    completion_count used for count-based habits.
 -- ---------------------------------------------------------------------------
 CREATE TABLE Habit_Logs (
-    log_id            INT          UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    habit_id          INT          UNSIGNED NOT NULL,
-    log_date          DATE         NOT NULL,
-    status            TINYINT(1)   NOT NULL DEFAULT 0
-                                   COMMENT '1 = completed (binary habits)',
-    completion_count  SMALLINT     UNSIGNED NOT NULL DEFAULT 0
-                                   COMMENT 'Count completed (count-based habits)',
-    logged_at         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT fk_logs_habit
-        FOREIGN KEY (habit_id) REFERENCES Habits(habit_id)
-        ON DELETE CASCADE ON UPDATE CASCADE,
-
-    -- One log per habit per day (prevent duplicates)
-    CONSTRAINT uq_log_habit_date UNIQUE (habit_id, log_date),
-
-    INDEX idx_logs_habit_date (habit_id, log_date),
-    INDEX idx_logs_date (log_date)
+    log_id            NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    habit_id          NUMBER         NOT NULL,
+    log_date          DATE           NOT NULL,
+    status            NUMBER(1)      DEFAULT 0 NOT NULL,
+    completion_count  NUMBER         DEFAULT 0 NOT NULL,
+    logged_at         TIMESTAMP      DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT fk_logs_habit FOREIGN KEY (habit_id) REFERENCES Habits(habit_id) ON DELETE CASCADE,
+    CONSTRAINT uq_log_habit_date UNIQUE (habit_id, log_date)
 );
+
+CREATE INDEX idx_logs_habit_date ON Habit_Logs(habit_id, log_date);
+CREATE INDEX idx_logs_date ON Habit_Logs(log_date);
 
 -- ---------------------------------------------------------------------------
 -- 4. BADGES
---    Static badge definitions. criteria is JSON-flavoured text for readability.
 -- ---------------------------------------------------------------------------
 CREATE TABLE Badges (
-    badge_id    INT          UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    badge_name  VARCHAR(100) NOT NULL,
-    description VARCHAR(255) NOT NULL,
-    criteria    ENUM(
-                    'streak_7',   -- 7-day streak on any habit
-                    'streak_30',  -- 30-day streak
-                    'streak_100', -- 100-day streak
-                    'total_10',   -- 10 total completions
-                    'total_50',   -- 50 total completions
-                    'total_100',  -- 100 total completions
-                    'points_100', -- earned 100 points
-                    'points_500', -- earned 500 points
-                    'points_1000' -- earned 1000 points
-                ) NOT NULL,
-    points_reward INT UNSIGNED NOT NULL DEFAULT 0,
-
-    CONSTRAINT uq_badge_name UNIQUE (badge_name)
+    badge_id    NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    badge_name  VARCHAR2(100) NOT NULL,
+    description VARCHAR2(255) NOT NULL,
+    criteria    VARCHAR2(50)  NOT NULL,
+    points_reward NUMBER      DEFAULT 0 NOT NULL,
+    CONSTRAINT uq_badge_name UNIQUE (badge_name),
+    CONSTRAINT chk_badge_criteria CHECK (
+        criteria IN (
+            'streak_7', 'streak_30', 'streak_100',
+            'total_10', 'total_50', 'total_100',
+            'points_100', 'points_500', 'points_1000'
+        )
+    )
 );
 
 -- ---------------------------------------------------------------------------
 -- 5. USER_BADGES
 -- ---------------------------------------------------------------------------
 CREATE TABLE User_Badges (
-    user_id      INT      UNSIGNED NOT NULL,
-    badge_id     INT      UNSIGNED NOT NULL,
-    awarded_date DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
+    user_id      NUMBER    NOT NULL,
+    badge_id     NUMBER    NOT NULL,
+    awarded_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     PRIMARY KEY (user_id, badge_id),
-
-    CONSTRAINT fk_ub_user
-        FOREIGN KEY (user_id) REFERENCES Users(user_id)
-        ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT fk_ub_badge
-        FOREIGN KEY (badge_id) REFERENCES Badges(badge_id)
-        ON DELETE CASCADE ON UPDATE CASCADE
+    CONSTRAINT fk_ub_user FOREIGN KEY (user_id) REFERENCES Users(user_id) ON DELETE CASCADE,
+    CONSTRAINT fk_ub_badge FOREIGN KEY (badge_id) REFERENCES Badges(badge_id) ON DELETE CASCADE
 );
 
 -- ---------------------------------------------------------------------------
 -- 6. EXPENSES
 -- ---------------------------------------------------------------------------
 CREATE TABLE Expenses (
-    expense_id   INT            UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    user_id      INT            UNSIGNED NOT NULL,
-    category     VARCHAR(80)    NOT NULL,
-    amount       DECIMAL(10, 2) NOT NULL CHECK (amount > 0),
-    note         VARCHAR(255)   NULL,
+    expense_id   NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id      NUMBER         NOT NULL,
+    category     VARCHAR2(80)   NOT NULL,
+    amount       NUMBER(10, 2)  NOT NULL,
+    note         VARCHAR2(255)  NULL,
     expense_date DATE           NOT NULL,
-    created_at   DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT fk_expenses_user
-        FOREIGN KEY (user_id) REFERENCES Users(user_id)
-        ON DELETE CASCADE ON UPDATE CASCADE,
-
-    INDEX idx_expenses_user_cat  (user_id, category),
-    INDEX idx_expenses_user_date (user_id, expense_date)
+    created_at   TIMESTAMP      DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT fk_expenses_user FOREIGN KEY (user_id) REFERENCES Users(user_id) ON DELETE CASCADE,
+    CONSTRAINT chk_exp_amount CHECK (amount > 0)
 );
+
+CREATE INDEX idx_expenses_user_cat  ON Expenses(user_id, category);
+CREATE INDEX idx_expenses_user_date ON Expenses(user_id, expense_date);
 
 -- ---------------------------------------------------------------------------
 -- 7. BUDGETS
---    One budget row per (user, category) per calendar month.
---    month_year stored as 'YYYY-MM' for easy comparison.
 -- ---------------------------------------------------------------------------
 CREATE TABLE Budgets (
-    budget_id     INT            UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    user_id       INT            UNSIGNED NOT NULL,
-    category      VARCHAR(80)    NOT NULL,
-    monthly_limit DECIMAL(10, 2) NOT NULL CHECK (monthly_limit > 0),
-    month_year    CHAR(7)        NOT NULL COMMENT 'Format: YYYY-MM',
-
-    CONSTRAINT fk_budgets_user
-        FOREIGN KEY (user_id) REFERENCES Users(user_id)
-        ON DELETE CASCADE ON UPDATE CASCADE,
-
-    CONSTRAINT uq_budget_user_cat_month UNIQUE (user_id, category, month_year),
-
-    INDEX idx_budgets_user (user_id)
+    budget_id     NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id       NUMBER         NOT NULL,
+    category      VARCHAR2(80)   NOT NULL,
+    monthly_limit NUMBER(10, 2)  NOT NULL,
+    month_year    VARCHAR2(7)    NOT NULL,
+    CONSTRAINT fk_budgets_user FOREIGN KEY (user_id) REFERENCES Users(user_id) ON DELETE CASCADE,
+    CONSTRAINT chk_bud_limit CHECK (monthly_limit > 0),
+    CONSTRAINT uq_bud_user_cat_mon UNIQUE (user_id, category, month_year)
 );
 
+CREATE INDEX idx_budgets_user ON Budgets(user_id);
+
 -- ---------------------------------------------------------------------------
--- 8. BUDGET_ALERTS  (written to by trigger, read by API)
---    Persists a log row whenever an expense pushes a category over budget.
+-- 8. BUDGET_ALERTS
 -- ---------------------------------------------------------------------------
 CREATE TABLE Budget_Alerts (
-    alert_id        INT            UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    user_id         INT            UNSIGNED NOT NULL,
-    category        VARCHAR(80)    NOT NULL,
-    month_year      CHAR(7)        NOT NULL,
-    budget_limit    DECIMAL(10, 2) NOT NULL,
-    total_spent     DECIMAL(10, 2) NOT NULL,
-    overage         DECIMAL(10, 2) NOT NULL COMMENT 'total_spent - budget_limit',
-    triggered_at    DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    expense_id      INT            UNSIGNED NOT NULL
-                    COMMENT 'The expense that caused the breach',
-
-    CONSTRAINT fk_alerts_user
-        FOREIGN KEY (user_id) REFERENCES Users(user_id)
-        ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT fk_alerts_expense
-        FOREIGN KEY (expense_id) REFERENCES Expenses(expense_id)
-        ON DELETE CASCADE ON UPDATE CASCADE
+    alert_id        NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id         NUMBER         NOT NULL,
+    category        VARCHAR2(80)   NOT NULL,
+    month_year      VARCHAR2(7)    NOT NULL,
+    budget_limit    NUMBER(10, 2)  NOT NULL,
+    total_spent     NUMBER(10, 2)  NOT NULL,
+    overage         NUMBER(10, 2)  NOT NULL,
+    triggered_at    TIMESTAMP      DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    expense_id      NUMBER         NOT NULL,
+    CONSTRAINT fk_alerts_user FOREIGN KEY (user_id) REFERENCES Users(user_id) ON DELETE CASCADE,
+    CONSTRAINT fk_alerts_expense FOREIGN KEY (expense_id) REFERENCES Expenses(expense_id) ON DELETE CASCADE
 );

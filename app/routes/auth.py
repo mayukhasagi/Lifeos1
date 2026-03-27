@@ -38,8 +38,8 @@ def register():
 
     pw_hash = hash_password(password)
     user_id = query(
-        "INSERT INTO Users (name, email, password_hash) VALUES (%s, %s, %s)",
-        (name, email, pw_hash), commit=True
+        "INSERT INTO Users (name, email, password_hash) VALUES (%s, %s, %s) RETURNING user_id INTO %s",
+        (name, email, pw_hash), commit=True, out_id_type='NUMBER'
     )
     token = create_token(user_id, current_app.config["SECRET_KEY"])
     return jsonify({"user_id": user_id, "token": token}), 201

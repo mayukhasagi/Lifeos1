@@ -54,8 +54,8 @@ const IconBadge=({icon,color})=>(
   <div style={{width:40,height:40,borderRadius:14,background:color+"25",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>{icon}</div>
 );
 const Toggle=({on,onToggle})=>(
-  <div onClick={onToggle} style={{width:44,height:24,borderRadius:50,cursor:"pointer",background:on?C.orange:"#DDD",display:"flex",alignItems:"center",padding:"0 3px",transition:"background .2s",flexShrink:0}}>
-    <div style={{width:18,height:18,borderRadius:"50%",background:"#FFF",transform:on?"translateX(20px)":"translateX(0)",transition:"transform .2s"}}/>
+  <div onClick={onToggle} style={{width:48,height:26,borderRadius:50,cursor:"pointer",background:on?C.orange:"#DDD",display:"flex",alignItems:"center",padding:"0 3px",transition:"background .2s",flexShrink:0}}>
+    <div style={{width:20,height:20,borderRadius:"50%",background:"#FFF",transform:on?"translateX(22px)":"translateX(0)",transition:"transform .2s"}}/>
   </div>
 );
 const SegControl=({options,value,onChange})=>(
@@ -492,7 +492,7 @@ function ExpensesScreen({token}) {
     }catch(e){setError(e.message);}finally{setBSaving(false);}
   };
 
-  const inp={flex:1,padding:"12px 14px",borderRadius:14,border:"none",background:C.sand,fontSize:13,fontFamily:"inherit",color:C.brown,outline:"none"};
+  const inp={flex:1,minWidth:0,padding:"12px 14px",borderRadius:14,border:"none",background:C.sand,fontSize:13,fontFamily:"inherit",color:C.brown,outline:"none",boxSizing:"border-box"};
   if(loading) return <div style={{padding:"52px 24px"}}><Spin/></div>;
 
   return (

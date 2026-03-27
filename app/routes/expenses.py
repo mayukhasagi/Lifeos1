@@ -43,10 +43,11 @@ def add_expense():
     expense_id = query(
         """
         INSERT INTO Expenses (user_id, category, amount, note, expense_date)
-        VALUES (%s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, TO_DATE(%s, 'YYYY-MM-DD'))
+        RETURNING expense_id INTO %s
         """,
         (request.user_id, category, amount, note, expense_date),
-        commit=True
+        commit=True, out_id_type='NUMBER'
     )
 
     # Check if this insert triggered a budget alert
@@ -78,7 +79,7 @@ def list_expenses():
     params = [request.user_id]
 
     if month:
-        sql    += " AND DATE_FORMAT(expense_date, '%Y-%m') = %s"
+        sql    += " AND TO_CHAR(expense_date, 'YYYY-MM') = %s"
         params.append(month)
     if category:
         sql    += " AND category = %s"
@@ -130,9 +131,14 @@ def set_budget():
 
     query(
         """
-        INSERT INTO Budgets (user_id, category, monthly_limit, month_year)
-        VALUES (%s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE monthly_limit = VALUES(monthly_limit)
+        MERGE INTO Budgets b
+        USING (SELECT %s AS u_id, %s AS cat, %s AS climit, %s AS m_year FROM DUAL) temp
+        ON (b.user_id = temp.u_id AND b.category = temp.cat AND b.month_year = temp.m_year)
+        WHEN MATCHED THEN
+            UPDATE SET b.monthly_limit = temp.climit
+        WHEN NOT MATCHED THEN
+            INSERT (user_id, category, monthly_limit, month_year)
+            VALUES (temp.u_id, temp.cat, temp.climit, temp.m_year)
         """,
         (request.user_id, category, monthly_limit, month_year),
         commit=True

@@ -58,8 +58,8 @@ def perfect_week():
                 COUNT(*) AS completed_days
             FROM Habit_Logs
             WHERE (status = 1 OR completion_count > 0)
-              AND YEAR(log_date) = %s
-              AND WEEK(log_date, 1) = %s
+              AND EXTRACT(YEAR FROM log_date) = %s
+              AND TO_NUMBER(TO_CHAR(log_date, 'IW')) = %s
             GROUP BY habit_id
         ) AS week_logs ON week_logs.habit_id = h.habit_id
         GROUP BY u.user_id, u.name
@@ -127,10 +127,10 @@ def budget_vs_habits():
             FROM Budgets b
             JOIN (
                 SELECT user_id, category,
-                       DATE_FORMAT(expense_date, '%%Y-%%m') AS month_year,
+                       TO_CHAR(expense_date, 'YYYY-MM') AS month_year,
                        SUM(amount) AS total_spent
                 FROM Expenses
-                GROUP BY user_id, category, DATE_FORMAT(expense_date, '%%Y-%%m')
+                GROUP BY user_id, category, TO_CHAR(expense_date, 'YYYY-MM')
             ) AS monthly_spend
             ON  monthly_spend.user_id    = b.user_id
             AND monthly_spend.category   = b.category
@@ -151,7 +151,7 @@ def budget_vs_habits():
                 ) AS completion_pct
             FROM Habits h
             JOIN Habit_Logs hl ON hl.habit_id = h.habit_id
-            WHERE DATE_FORMAT(hl.log_date, '%%Y-%%m') = %s
+            WHERE TO_CHAR(hl.log_date, 'YYYY-MM') = %s
             GROUP BY h.user_id
             HAVING completion_pct >= 80
         ) AS habit_status ON habit_status.user_id = u.user_id
@@ -174,41 +174,32 @@ def top_habits():
     rows = query(
         """
         SELECT
-            u.user_id,
-            u.name,
-            ranked.habit_id,
-            ranked.habit_name,
-            ranked.total_completions,
-            ranked.user_rank
+            user_id,
+            name,
+            habit_id,
+            habit_name,
+            total_completions,
+            user_rank
         FROM (
             SELECT
+                u.user_id,
+                u.name,
                 h.habit_id,
-                h.user_id,
                 h.habit_name,
-                COUNT(
-                    CASE WHEN hl.status = 1 OR hl.completion_count > 0 THEN 1 END
-                ) AS total_completions,
-                (
-                    SELECT COUNT(*) + 1
-                    FROM Habits h2
-                    LEFT JOIN Habit_Logs hl2 ON hl2.habit_id = h2.habit_id
-                    WHERE h2.user_id = h.user_id
-                    GROUP BY h2.habit_id
-                    HAVING COUNT(
-                        CASE WHEN hl2.status = 1 OR hl2.completion_count > 0 THEN 1 END
-                    ) > COUNT(
-                        CASE WHEN hl.status = 1 OR hl.completion_count > 0 THEN 1 END
-                    )
+                COUNT(CASE WHEN hl.status = 1 OR hl.completion_count > 0 THEN 1 END) AS total_completions,
+                RANK() OVER (
+                    PARTITION BY u.user_id 
+                    ORDER BY COUNT(CASE WHEN hl.status = 1 OR hl.completion_count > 0 THEN 1 END) DESC
                 ) AS user_rank
-            FROM Habits h
-            LEFT JOIN Habit_Logs hl ON hl.habit_id = h.habit_id
+            FROM Users u
+            JOIN Habits h ON u.user_id = h.user_id
+            LEFT JOIN Habit_Logs hl ON h.habit_id = hl.habit_id
             WHERE h.user_id = %s
-            GROUP BY h.habit_id, h.user_id, h.habit_name
-            HAVING total_completions >= %s
-        ) AS ranked
-        JOIN Users u ON u.user_id = ranked.user_id
-        WHERE COALESCE(ranked.user_rank, 1) <= 5
-        ORDER BY ranked.user_rank
+            GROUP BY u.user_id, u.name, h.habit_id, h.habit_name
+            HAVING COUNT(CASE WHEN hl.status = 1 OR hl.completion_count > 0 THEN 1 END) >= %s
+        )
+        WHERE user_rank <= 5
+        ORDER BY user_rank
         """,
         (request.user_id, min_c)
     )
@@ -236,12 +227,12 @@ def expense_running_total():
                 SELECT COALESCE(SUM(e2.amount), 0)
                 FROM Expenses e2
                 WHERE e2.user_id = e.user_id
-                  AND DATE_FORMAT(e2.expense_date, '%%Y-%%m') = %s
+                  AND TO_CHAR(e2.expense_date, 'YYYY-MM') = %s
                   AND e2.expense_id <= e.expense_id
             ) AS running_total
         FROM Expenses e
         WHERE e.user_id = %s
-          AND DATE_FORMAT(e.expense_date, '%%Y-%%m') = %s
+          AND TO_CHAR(e.expense_date, 'YYYY-MM') = %s
         ORDER BY e.expense_date, e.expense_id
         """,
         (month, request.user_id, month)

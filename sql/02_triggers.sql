@@ -1,141 +1,155 @@
 -- =============================================================================
--- LifeOS: Gamified Habit Tracking System
+-- LifeOS: Gamified Habit Tracking System (Oracle SQL Version)
 -- File: 02_triggers.sql  |  All Database Triggers
 -- =============================================================================
-
-USE lifeos;
-
-DELIMITER $$
 
 -- ---------------------------------------------------------------------------
 -- TRIGGER 1: trg_after_habit_log_insert
 --
 -- Fires AFTER a row is inserted into Habit_Logs.
--- Responsibilities:
---   (a) Recalculate current_streak for the habit using a consecutive-date
---       window query — NO Python involved.
---   (b) Update best_streak if current_streak exceeds it.
---   (c) Call sp_award_points to credit the user for this completion.
---   (d) Call sp_check_and_award_badges to evaluate badge eligibility.
---
--- Streak logic explanation:
---   We look backwards from the NEW log_date and count how many consecutive
---   calendar days exist in Habit_Logs for this habit_id. We use a variable
---   assignment trick (@d) to detect gaps.
+-- Implemented as a Compound Trigger to avoid the mutating table error (ORA-04091).
 -- ---------------------------------------------------------------------------
-CREATE TRIGGER trg_after_habit_log_insert
-AFTER INSERT ON Habit_Logs
-FOR EACH ROW
-BEGIN
-    DECLARE v_streak    INT UNSIGNED DEFAULT 0;
-    DECLARE v_user_id   INT UNSIGNED;
+CREATE OR REPLACE TRIGGER trg_after_habit_log_insert
+FOR INSERT ON Habit_Logs
+COMPOUND TRIGGER
 
-    -- Only process if this log actually marks a completion
-    IF NEW.status = 1 OR NEW.completion_count > 0 THEN
+    TYPE habit_log_rt IS RECORD (
+        habit_id NUMBER,
+        status NUMBER,
+        completion_count NUMBER
+    );
+    TYPE habit_log_aat IS TABLE OF habit_log_rt INDEX BY PLS_INTEGER;
+    v_logs habit_log_aat;
+    v_idx PLS_INTEGER := 0;
 
-        -- ── (a) Recalculate streak ─────────────────────────────────────────
-        -- Walk back through logs for this habit ordered descending.
-        -- A variable @prev_date tracks the last-seen date; once a gap > 1 day
-        -- is found the streak resets.  We use a subquery approach compatible
-        -- with MySQL 5.7+ (no window functions required).
-        SET @prev_date := NULL;
-        SET @streak    := 0;
-        SET @gap_found := 0;
+    AFTER EACH ROW IS
+    BEGIN
+        IF :NEW.status = 1 OR :NEW.completion_count > 0 THEN
+            v_idx := v_idx + 1;
+            v_logs(v_idx).habit_id := :NEW.habit_id;
+            v_logs(v_idx).status := :NEW.status;
+            v_logs(v_idx).completion_count := :NEW.completion_count;
+        END IF;
+    END AFTER EACH ROW;
 
-        -- Build streak by iterating completed logs newest → oldest
-        SELECT SUM(is_consecutive) INTO v_streak
-        FROM (
-            SELECT
-                log_date,
-                CASE
-                    WHEN @prev_date IS NULL THEN
-                        -- First row: start streak at 1
-                        (SELECT @prev_date := log_date, @streak := 1, 1)
-                    WHEN DATEDIFF(@prev_date, log_date) = 1 AND @gap_found = 0 THEN
-                        -- Consecutive day: extend streak
-                        (SELECT @prev_date := log_date, @streak := @streak + 1, 1)
-                    ELSE
-                        -- Gap found: stop counting
-                        (SELECT @gap_found := 1, 0)
-                END AS is_consecutive
-            FROM Habit_Logs
-            WHERE habit_id = NEW.habit_id
-              AND (status = 1 OR completion_count > 0)
-            ORDER BY log_date DESC
-        ) AS streak_calc;
+    AFTER STATEMENT IS
+        v_streak    NUMBER := 0;
+        v_user_id   NUMBER;
+        v_prev_date DATE;
+        v_gap_found NUMBER;
+    BEGIN
+        FOR i IN 1 .. v_logs.COUNT LOOP
+            -- Walk back through logs for this habit ordered descending.
+            v_streak := 0;
+            v_prev_date := NULL;
+            v_gap_found := 0;
+            
+            FOR rec IN (
+                SELECT log_date
+                FROM Habit_Logs
+                WHERE habit_id = v_logs(i).habit_id
+                  AND (status = 1 OR completion_count > 0)
+                ORDER BY log_date DESC
+            )
+            LOOP
+                IF v_gap_found = 1 THEN
+                    EXIT;
+                END IF;
+                
+                IF v_prev_date IS NULL THEN
+                    v_prev_date := rec.log_date;
+                    v_streak := 1;
+                ELSIF (v_prev_date - rec.log_date) = 1 THEN
+                    v_prev_date := rec.log_date;
+                    v_streak := v_streak + 1;
+                ELSE
+                    v_gap_found := 1;
+                END IF;
+            END LOOP;
 
-        -- Coalesce NULL to 0 (no logs)
-        SET v_streak = COALESCE(v_streak, 0);
+            -- Update habit streaks
+            UPDATE Habits
+            SET current_streak = v_streak,
+                best_streak    = GREATEST(best_streak, v_streak)
+            WHERE habit_id = v_logs(i).habit_id
+            RETURNING user_id INTO v_user_id;
 
-        -- ── (b) Update habit streaks ───────────────────────────────────────
-        UPDATE Habits
-        SET
-            current_streak = v_streak,
-            best_streak    = GREATEST(best_streak, v_streak)
-        WHERE habit_id = NEW.habit_id;
+            -- Award points and check badges
+            sp_award_points(v_user_id, v_logs(i).habit_id, v_streak);
+            sp_check_and_award_badges(v_user_id);
+        END LOOP;
+    END AFTER STATEMENT;
 
-        -- ── (c) Award points ───────────────────────────────────────────────
-        -- Fetch user_id for this habit
-        SELECT user_id INTO v_user_id
-        FROM Habits
-        WHERE habit_id = NEW.habit_id;
-
-        CALL sp_award_points(v_user_id, NEW.habit_id, v_streak);
-
-        -- ── (d) Check badge eligibility ────────────────────────────────────
-        CALL sp_check_and_award_badges(v_user_id);
-
-    END IF;
-END$$
+END trg_after_habit_log_insert;
+/
 
 
 -- ---------------------------------------------------------------------------
 -- TRIGGER 2: trg_after_expense_insert
 --
 -- Fires AFTER a row is inserted into Expenses.
--- Checks whether total spending in the same (user, category, month) now
--- exceeds the Budget monthly_limit.
--- If a Budget row exists AND is exceeded, write a row to Budget_Alerts.
+-- Implemented as a Compound Trigger to evaluate total_spend without ORA-04091.
 -- ---------------------------------------------------------------------------
-CREATE TRIGGER trg_after_expense_insert
-AFTER INSERT ON Expenses
-FOR EACH ROW
-BEGIN
-    DECLARE v_limit     DECIMAL(10,2) DEFAULT NULL;
-    DECLARE v_spent     DECIMAL(10,2) DEFAULT 0;
-    DECLARE v_month_year CHAR(7);
+CREATE OR REPLACE TRIGGER trg_after_expense_insert
+FOR INSERT ON Expenses
+COMPOUND TRIGGER
 
-    SET v_month_year = DATE_FORMAT(NEW.expense_date, '%Y-%m');
+    TYPE expense_rt IS RECORD (
+        expense_id   NUMBER,
+        user_id      NUMBER,
+        category     VARCHAR2(80),
+        amount       NUMBER(10, 2),
+        expense_date DATE
+    );
+    TYPE expense_aat IS TABLE OF expense_rt INDEX BY PLS_INTEGER;
+    v_expenses expense_aat;
+    v_idx PLS_INTEGER := 0;
 
-    -- Look up budget for this user / category / month
-    SELECT monthly_limit INTO v_limit
-    FROM Budgets
-    WHERE user_id    = NEW.user_id
-      AND category   = NEW.category
-      AND month_year = v_month_year
-    LIMIT 1;
+    AFTER EACH ROW IS
+    BEGIN
+        v_idx := v_idx + 1;
+        v_expenses(v_idx).expense_id   := :NEW.expense_id;
+        v_expenses(v_idx).user_id      := :NEW.user_id;
+        v_expenses(v_idx).category     := :NEW.category;
+        v_expenses(v_idx).amount       := :NEW.amount;
+        v_expenses(v_idx).expense_date := :NEW.expense_date;
+    END AFTER EACH ROW;
 
-    -- Only proceed if a budget exists for this category+month
-    IF v_limit IS NOT NULL THEN
+    AFTER STATEMENT IS
+        v_limit      NUMBER(10,2);
+        v_spent      NUMBER(10,2);
+        v_month_year VARCHAR2(7);
+    BEGIN
+        FOR i IN 1 .. v_expenses.COUNT LOOP
+            v_month_year := TO_CHAR(v_expenses(i).expense_date, 'YYYY-MM');
 
-        -- Sum all expenses in this user / category / month (including NEW row)
-        SELECT COALESCE(SUM(amount), 0) INTO v_spent
-        FROM Expenses
-        WHERE user_id      = NEW.user_id
-          AND category     = NEW.category
-          AND DATE_FORMAT(expense_date, '%Y-%m') = v_month_year;
+            BEGIN
+                SELECT monthly_limit INTO v_limit
+                FROM Budgets
+                WHERE user_id    = v_expenses(i).user_id
+                  AND category   = v_expenses(i).category
+                  AND month_year = v_month_year;
+            EXCEPTION
+                WHEN NO_DATA_FOUND THEN v_limit := NULL;
+            END;
 
-        -- If over budget, log an alert
-        IF v_spent > v_limit THEN
-            INSERT INTO Budget_Alerts
-                (user_id, category, month_year, budget_limit, total_spent, overage, expense_id)
-            VALUES
-                (NEW.user_id, NEW.category, v_month_year,
-                 v_limit, v_spent, v_spent - v_limit, NEW.expense_id);
-        END IF;
+            IF v_limit IS NOT NULL THEN
+                SELECT NVL(SUM(amount), 0) INTO v_spent
+                FROM Expenses
+                WHERE user_id = v_expenses(i).user_id
+                  AND category = v_expenses(i).category
+                  AND TO_CHAR(expense_date, 'YYYY-MM') = v_month_year;
 
-    END IF;
-END$$
+                IF v_spent > v_limit THEN
+                    INSERT INTO Budget_Alerts
+                        (user_id, category, month_year, budget_limit, total_spent, overage, expense_id)
+                    VALUES
+                        (v_expenses(i).user_id, v_expenses(i).category, v_month_year,
+                         v_limit, v_spent, v_spent - v_limit, v_expenses(i).expense_id);
+                END IF;
+            END IF;
+        END LOOP;
+    END AFTER STATEMENT;
 
-
-DELIMITER ;
+END trg_after_expense_insert;
+/
